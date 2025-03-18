@@ -51,24 +51,26 @@ categories:
     title: RAG记忆配置
     settings:
       api_key:
-        value: ""
-        type: string
-        description: 嵌入API密钥（OpenAI/KouriChat/硅基流动）
-        is_secret: true
-      base_url:
-        value: ""
-        type: string
-        description: 嵌入API基础URL（留空使用LLM模块配置）
+         value: ''
+         type: string
+         description: 嵌入API密钥（硅基流动）
+         is_secret: true
+      bbase_url:
+         value: ''
+         type: string
+         description: 嵌入API基础URL（留空使用LLM模块配置）
       
-      embedding_model:
-        value: "text-embedding-3-large"
-        type: string
-        description: 嵌入模型名称
-        options:
-          - "text-embedding-3-large"
-          - "text-embedding-3-small"
-          - "BAAI/bge-m3"
-          - "text-embedding-ada-002"
+      eembedding_model:
+         value: BAAI/bge-m3
+         type: string
+         description: 嵌入模型名称
+         options:
+         - BAAI/bge-m3
+         - BAAI/bge-reranker-v2-m3
+         - BAAI/bge-large-zh-v1.5
+         - BAAI/bge-large-en-v1.5
+         - BAAI/bge-reranker-v2-m3  
+         - Pro/BAAI/bge-reranker-v2-m3
           
       reranker_model:
         value: ""
