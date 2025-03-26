@@ -10,11 +10,8 @@
 import base64
 import logging
 import requests
-from typing import Optional, List, Dict, Callable
+from typing import Optional
 import os
-import threading
-import queue
-import time
 
 # 修改logger获取方式，确保与main模块一致
 logger = logging.getLogger('main')
@@ -23,11 +20,6 @@ class ImageRecognitionService:
     def __init__(self, api_key: str, base_url: str, temperature: float, model: str):
         self.api_key = api_key
         self.base_url = base_url
-        try:
-            temperature = float(temperature)  # 尝试将 temperature 转换为浮点数
-        except ValueError:
-            logger.error(f"传入的 temperature 值 {temperature} 无法转换为浮点数，使用默认值 0.5")
-            temperature = 0.5 
         # 确保 temperature 在有效范围内
         self.temperature = min(max(0.0, temperature), 1.0)  # 限制在 0-1 之间
         self.headers = {
@@ -36,48 +28,11 @@ class ImageRecognitionService:
         }
         self.model = model  # "moonshot-v1-8k-vision-preview"
         
-        # 替换锁机制为任务队列
-        self.task_queue = queue.Queue()
-        self.is_replying = False  # 标记当前是否在回复过程中
-        self.worker_thread = threading.Thread(target=self._process_image_queue, daemon=True)
-        self.worker_thread.start()
-        
         if temperature > 1.0:
             logger.warning(f"Temperature值 {temperature} 超出范围，已自动调整为 1.0")
 
-    def _process_image_queue(self):
-        """后台线程处理图片识别队列"""
-        while True:
-            try:
-                # 等待队列中的任务
-                image_task = self.task_queue.get()
-                if image_task is None:
-                    continue
-                    
-                # 如果正在回复，等待回复结束
-                while self.is_replying:
-                    time.sleep(0.5)
-                    
-                # 解析任务
-                image_path, is_emoji, callback = image_task
-                
-                # 执行图片识别，并通过回调返回结果
-                result = self._recognize_image_impl(image_path, is_emoji)
-                if callback:
-                    callback(result)
-                    
-            except Exception as e:
-                logger.error(f"处理图片识别队列时出错: {str(e)}")
-            finally:
-                # 标记任务完成
-                try:
-                    self.task_queue.task_done()
-                except:
-                    pass
-                time.sleep(0.1)  # 防止CPU占用过高
-
-    def _recognize_image_impl(self, image_path: str, is_emoji: bool = False) -> str:
-        """实际执行图片识别的内部方法"""
+    def recognize_image(self, image_path: str, is_emoji: bool = False) -> str:
+        """使用 Moonshot AI 识别图片内容并返回文本"""
         try:
             # 验证图片路径
             if not os.path.exists(image_path):
@@ -99,7 +54,7 @@ class ImageRecognitionService:
                 return "抱歉，读取图片时出现错误"
 
             # 设置提示词
-            text_prompt = "请描述这个图片" if not is_emoji else "请描述这个聊天窗口的最后一张表情包"
+            text_prompt = "请描述这个图片" if not is_emoji else "这是一张微信聊天的图片截图，请描述这个聊天窗口左边的聊天用户用户发送的最后一张表情，不要去识别聊天用户的头像"
             
             # 准备请求数据
             data = {
@@ -170,22 +125,6 @@ class ImageRecognitionService:
         except Exception as e:
             logger.error(f"图片识别过程失败: {str(e)}", exc_info=True)
             return "抱歉，图片识别过程出现错误"
-
-    def recognize_image(self, image_path: str, is_emoji: bool = False, callback: Callable = None) -> str:
-        """添加图片识别任务到队列，在回复消息后再处理"""
-        try:
-            # 添加到任务队列
-            self.task_queue.put((image_path, is_emoji, callback))
-            logger.info(f"已添加图片识别任务到队列: {image_path}")
-            return "图片已接收，将在消息回复后处理"
-        except Exception as e:
-            logger.error(f"添加图片识别任务失败: {str(e)}")
-            return "抱歉，处理图片时出现错误"
-
-    def set_replying_status(self, is_replying: bool):
-        """设置当前是否在进行回复"""
-        self.is_replying = is_replying
-        logger.debug(f"回复状态已更新: {'正在回复' if is_replying else '回复结束'}")
 
     def chat_completion(self, messages: list, **kwargs) -> Optional[str]:
         """发送聊天请求到 Moonshot AI"""

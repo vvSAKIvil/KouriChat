@@ -34,7 +34,7 @@ class LoggerConfig:
         # 创建或获取日志记录器
         logger = logging.getLogger(name)
         logger.setLevel(level)
-        logger.propagate = False  # 修改为False，防止日志消息向上传播导致重复记录
+        logger.propagate = True  # 确保日志能正确传播
         
         # 移除所有已有的handler，防止重复
         for handler in logger.handlers[:]:
@@ -43,10 +43,8 @@ class LoggerConfig:
         # 创建控制台处理器
         console_handler = logging.StreamHandler()
         console_handler.setLevel(level)
-        # 修改日志格式：行号[日期时间] - 级别 - 消息
         console_formatter = logging.Formatter(
-            '%(lineno)d[%(asctime)s] - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+            '%(asctime)s - %(levelname)s - %(message)s'
         )
         console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
@@ -59,22 +57,12 @@ class LoggerConfig:
             encoding='utf-8'
         )
         file_handler.setLevel(level)
-        # 修改文件日志格式：行号[日期时间] - 名称 - 级别 - 消息
         file_formatter = logging.Formatter(
-            '%(lineno)d[%(asctime)s] - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
 
-        # 设置特定模块的日志级别，减少冗余日志
-        logging.getLogger('openai').setLevel(logging.WARNING)  # 减少openai库的日志输出
-        logging.getLogger('httpx').setLevel(logging.WARNING)  # 减少http请求的日志输出
-        
-        # 设置API请求相关日志级别
-        if name == 'api_client':
-            logging.getLogger('api_client').setLevel(logging.WARNING)
-        
         return logger
 
     def cleanup_old_logs(self, days: int = 7):
@@ -97,34 +85,4 @@ class LoggerConfig:
                 except ValueError:
                     continue
         except Exception as e:
-            print(f"清理日志文件失败: {str(e)}")
-
-# 添加一个兼容函数，用于获取日志记录器
-def get_logger(name: Optional[str] = None, level: int = logging.INFO):
-    """
-    获取一个日志记录器实例。这是一个兼容函数，用于与依赖于get_logger函数的模块兼容。
-    
-    Args:
-        name: 日志记录器名称
-        level: 日志级别
-        
-    Returns:
-        logger: 日志记录器实例
-    """
-    # 创建或获取日志记录器
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    
-    # 如果没有处理器，添加一个简单的控制台处理器
-    if not logger.handlers:
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(level)
-        # 修改为新的日志格式
-        formatter = logging.Formatter(
-            '%(lineno)d[%(asctime)s] - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
-    
-    return logger 
+            print(f"清理日志文件失败: {str(e)}") 
