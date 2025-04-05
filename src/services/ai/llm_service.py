@@ -99,111 +99,64 @@ class LLMService:
             logger.error(f"Response sanitization failed: {str(e)}")
             return "响应处理异常，请重新尝试"
 
+    def _filter_thinking_content(self, content: str) -> str:
+        """
+        过滤思考内容，支持不同模型的返回格式
+        1. R1格式: 思考过程...\n\n\n最终回复
+        2. Gemini格式: <think>思考过程</think>\n\n最终回复
+        """
+        try:
+            # 过滤 Gemini 格式 (<think>思考过程</think>)
+            filtered_content = re.sub(r'<think>.*?</think>\s*', '', content, flags=re.DOTALL)
+            
+            # 过滤 R1 格式 (思考过程...\n\n\n最终回复)
+            # 查找三个连续换行符
+            triple_newline_match = re.search(r'\n\n\n', filtered_content)
+            if triple_newline_match:
+                # 只保留三个连续换行符后面的内容（最终回复）
+                filtered_content = filtered_content[triple_newline_match.end():]
+            
+            return filtered_content.strip()
+        except Exception as e:
+            logger.error(f"过滤思考内容失败: {str(e)}")
+            return content  # 如果处理失败，返回原始内容
+
     def _validate_response(self, response: dict) -> bool:
         """
-        API响应校验增强版
-        验证点涵盖：
-        1. 基础字段存在性
-        2. 字段类型校验
-        3. 关键内容有效性
-        4. 数据一致性校验
+        放宽检验
+        API响应校验
+        只要能获取到有效的回复内容就返回True
         """
-        # DEBUG模式时可打印完整响应结构
-        logger.debug("API响应调试信息：\n%s", json.dumps(response, indent=2, ensure_ascii=False))
+        try:
+            # 尝试获取回复内容
+            if isinstance(response, dict):
+                choices = response.get("choices", [])
+                if choices and isinstance(choices, list):
+                    first_choice = choices[0]
+                    if isinstance(first_choice, dict):
+                        # 尝试不同的响应格式
+                        # 格式1: choices[0].message.content
+                        if isinstance(first_choice.get("message"), dict):
+                            content = first_choice["message"].get("content")
+                            if content and isinstance(content, str):
+                                return True
+                        
+                        # 格式2: choices[0].content
+                        content = first_choice.get("content")
+                        if content and isinstance(content, str):
+                            return True
+                        
+                        # 格式3: choices[0].text
+                        text = first_choice.get("text")
+                        if text and isinstance(text, str):
+                            return True
 
-        # —— 校验层级1：基础结构 ——
-        required_root_keys = {"id", "object", "created", "model", "choices", "usage"}
-        if missing := required_root_keys - response.keys():
-            logger.error("根层级缺少必需字段：%s", missing)
+            logger.warning("无法从响应中获取有效内容")
             return False
-
-        # —— 校验层级2：字段类型校验 ——
-        type_checks = [
-            ("id", str, "字段应为字符串"),
-            ("object", str, "字段应为字符串"),
-            ("created", int, "字段应为时间戳整数"),
-            ("model", str, "字段应为模型名称字符串"),
-            ("choices", list, "字段应为列表类型"),
-            ("usage", dict, "字段应为使用量字典")
-        ]
-
-        for field, expected_type, error_msg in type_checks:
-            if not isinstance(response.get(field), expected_type):
-                logger.error("字段[%s]类型错误：%s", field, error_msg)
-                return False
-
-        # —— 校验层级3：字段内容有效性 ——
-        # 检查模型名称格式 - 支持多种模型格式
-        # model_name = response["model"]
-        # valid_model_prefixes = [
-        #     'deepseek', 'qwen', 'claude', 'chatglm', 'llama', 'gpt', 'baichuan', 
-        #     'mixtral', 'gemma', 'phi', 'yi', 'glm'
-        # ]
-        
-        # # 检查模型名称是否符合常见命名模式
-        # if not any(re.search(prefix, model_name, re.IGNORECASE) for prefix in valid_model_prefixes):
-        #     logger.warning("模型名称格式不常见：%s，但仍继续处理", model_name)
-        #     # 注意：这里改为警告而不是错误，不再拒绝响应
-
-        # 检查时间戳有效性（允许过去30年到未来5分钟）
-        current_timestamp = int(time.time())
-        if not (current_timestamp - 946080000 < response["created"] < current_timestamp + 300):
-            logger.error("无效时间戳：%s", response["created"])
+            
+        except Exception as e:
+            logger.error(f"验证响应时发生错误: {str(e)}")
             return False
-
-        # —— 校验层级4：choices数组结构 ——
-        if len(response["choices"]) == 0:
-            logger.error("空响应choices数组")
-            return False
-
-        for index, choice in enumerate(response["choices"]):
-            if not isinstance(choice, dict):
-                logger.error("第%d个choice类型错误", index)
-                return False
-
-            if missing := {"index", "message", "finish_reason"} - choice.keys():
-                logger.error("choice%d缺少字段：%s", index, missing)
-                return False
-
-            # 校验message结构
-            message = choice["message"]
-            if missing := {"role", "content"} - message.keys():
-                logger.error("message结构异常：缺少%s", missing)
-                return False
-
-            if message["role"] != "assistant":
-                logger.error("非预期角色类型：%s", message["role"])
-                return False
-
-            if not isinstance(message["content"], str) or len(message["content"].strip()) == 0:
-                logger.error("无效消息内容：%s", message["content"])
-                return False
-
-            # 校验finish_reason
-            if choice["finish_reason"] not in ("stop", "length", "content_filter", None):
-                logger.error("异常对话终止原因：%s", choice["finish_reason"])
-                return False
-
-        # —— 校验层级5：使用量统计 ——
-        usage = response["usage"]
-        usage_checks = [
-            ("prompt_tokens", int, "应为非负整数"),
-            ("completion_tokens", int, "应为非负整数"),
-            ("total_tokens", int, "应为非负整数")
-        ]
-
-        for field, expected_type, error_msg in usage_checks:
-            if not isinstance(usage.get(field), expected_type) or usage[field] < 0:
-                logger.error("使用量字段[%s]无效：%s", field, error_msg)
-                return False
-
-        # 校验token总数一致性
-        if usage["total_tokens"] != (usage["prompt_tokens"] + usage["completion_tokens"]):
-            logger.error("Token总数不一致：prompt(%d) + completion(%d) ≠ total(%d)",
-                         usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"])
-            return False
-
-        return True
 
     def get_response(self, message: str, user_id: str, system_prompt: str, previous_context: List[Dict] = None, core_memory: str = None) -> str:
         """
@@ -218,8 +171,7 @@ class LLMService:
         try:
             # —— 阶段1：输入验证 ——
             if not message.strip():
-                logger.warning("收到空消息请求")
-                return "嗯...我好像收到了空白消息呢（歪头）"
+                return "Error: Empty message received"
 
             # —— 阶段2：上下文更新 ——
             # 只在程序刚启动时（上下文为空时）加载外部历史上下文
@@ -283,7 +235,7 @@ class LLMService:
                         "max_tokens": self.config["max_token"]
                     }
                 }
-                
+
                 # 使用 requests 库向 Ollama API 发送 POST 请求
                 try:
                     response = requests.post(
@@ -297,13 +249,22 @@ class LLMService:
                     # 检查响应中是否包含 message 字段
                     if response_data and "message" in response_data:
                         raw_content = response_data["message"]["content"]
+                        
+                        # 处理 R1 特殊格式，可能包含 reasoning_content 字段
+                        if isinstance(response_data["message"], dict) and "reasoning_content" in response_data["message"]:
+                            logger.debug("检测到 R1 格式响应，将分离思考内容")
+                            # 只使用 content 字段内容，忽略 reasoning_content
+                            raw_content = response_data["message"]["content"]
+                            
                         logger.debug("Ollama API响应内容: %s", raw_content)
                     else:
                         raise ValueError("错误的API响应结构")
                         
                     clean_content = self._sanitize_response(raw_content)
-                    self._manage_context(user_id, clean_content, "assistant")
-                    return clean_content
+                    # 过滤思考内容
+                    filtered_content = self._filter_thinking_content(clean_content)
+                    self._manage_context(user_id, filtered_content, "assistant")
+                    return filtered_content
                     
                 except Exception as e:
                     logger.error(f"Ollama API请求失败: {str(e)}")
@@ -320,29 +281,28 @@ class LLMService:
                     "top_p": 0.95,  # top_p 参数
                     "frequency_penalty": 0.2  # 频率惩罚参数
                 }
-                
+
                 # 使用 OpenAI 客户端发送请求
                 response = self.client.chat.completions.create(**request_config)
                 # 验证 API 响应结构
                 if not self._validate_response(response.model_dump()):
                     raise ValueError("错误的API响应结构")
-                    
+
                 # 获取原始内容
                 raw_content = response.choices[0].message.content
                 # 清理响应内容
                 clean_content = self._sanitize_response(raw_content)
+                # 过滤思考内容
+                filtered_content = self._filter_thinking_content(clean_content)
                 # 管理上下文
-                self._manage_context(user_id, clean_content, "assistant")
-                # 返回清理后的内容
-                return clean_content or ""
+                self._manage_context(user_id, filtered_content, "assistant")
+                # 返回过滤后的内容
+                return filtered_content or ""
 
         except Exception as e:
+            error_message = f"Error: {str(e)}"
             logger.error("大语言模型服务调用失败: %s", str(e), exc_info=True)
-            return random.choice([
-                "好像有些小状况，请再试一次吧～",
-                "信号好像不太稳定呢（皱眉）",
-                "思考被打断了，请再说一次好吗？"
-            ])
+            return error_message
 
     def clear_history(self, user_id: str) -> bool:
         """
@@ -369,7 +329,7 @@ class LLMService:
     def chat(self, messages: list, **kwargs) -> str:
         """
         发送聊天请求并获取回复
-        
+
         Args:
             messages: 消息列表，每个消息是包含 role 和 content 的字典
             **kwargs: 额外的参数配置
@@ -387,8 +347,13 @@ class LLMService:
             
             if not self._validate_response(response.model_dump()):
                 raise ValueError("Invalid API response structure")
+            
+            raw_content = response.choices[0].message.content    
+            # 清理和过滤响应内容
+            clean_content = self._sanitize_response(raw_content)
+            filtered_content = self._filter_thinking_content(clean_content)
                 
-            return response.choices[0].message.content or ""
+            return filtered_content or ""
             
         except Exception as e:
             logger.error(f"Chat completion failed: {str(e)}")
